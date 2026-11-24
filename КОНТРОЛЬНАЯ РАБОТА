@@ -1,1 +1,97 @@
+import asyncio
+import os
+import aiohttp
+from aiogram import Bot
+from aiogram.utils.exceptions import RetryAfter
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+URL = "https://catalog.onliner.by/sdapi/catalog.api/search/dram?order=price%3Aasc&volume_dram%5Bfrom%5D=4gb"
+
+
+
+async def get_cheapest_ram() -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(URL, headers=headers) as response:
+            if response.status != 200:
+                return f"Ошибка при запросе к Onliner: статус {response.status}"
+            data = await response.json()
+
+    products = data.get("products", [])
+
+    for item in products:
+        prices = item.get("prices")
+        if prices and prices.get("price_min"):
+            name = item.get("full_name")
+            link = item.get("html_url")
+            price = prices["price_min"]["amount"]
+            currency = prices["price_min"]["currency"]
+
+            return (
+                f"Самая дешевая ОЗУ (от 4 ГБ):\n"
+                f"Модель: {name}\n"
+                f"Цена: {price} {currency}\n"
+                f"<a href='{link}'>Открыть на Onliner</a>"
+            )
+
+    return "Подходящих товаров в наличии не найдено."
+
+
+
+async def send_daily_message(bot: Bot):
+    text = await get_cheapest_ram()
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+        print("Сообщение успешно отправлено в Telegram!")
+    except TelegramRetryAfter as e:
+        print(f"Flood control: ждем {e.retry_after} сек...")
+        await asyncio.sleep(e.retry_after)
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка при отправке: {e}")
+
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    scheduler = AsyncIOScheduler(timezone="Europe/Minsk")
+
+
+    scheduler.add_job(
+        send_daily_message,
+        trigger="cron",
+        hour=22,
+        minute=59,
+        kwargs={"bot": bot}
+    )
+
+
+    scheduler.start()
+    print("Бот запущен! Ожидаю 22:59 ")
+
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+
+        scheduler.shutdown()
+        await bot.session.close()
+        print("Бот остановлен, сессии закрыты.")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Программа завершена пользователем.")
 
